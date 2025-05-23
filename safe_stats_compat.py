@@ -4,7 +4,6 @@ from decimal import Decimal
 from statistics import mean, median, stdev
 from typing import Any, Dict, List, Sequence
 from eth_utils.currency import from_wei
-
 try:
     from safe_eth.eth import EthereumClient
     try:
@@ -16,7 +15,6 @@ except ImportError:
     from gnosis.eth import EthereumClient
     from gnosis.safe.api.transaction_service_api import TransactionServiceApi
     from gnosis.safe import Safe
-
 from maya import MayaDT
 
 class SummaryStats:
@@ -29,12 +27,12 @@ class SummaryStats:
 
 class SafeSignerStats:
     def __init__(self, a: str):
-        self.a = a
-        self.c = 0
-        self.s = 0
-        self.e = 0
-        self.g = Decimal(0)
-        self._t: List[float] = []
+        self.a = a              # address
+        self.c = 0              # created
+        self.s = 0              # signed
+        self.e = 0              # executed
+        self.g = Decimal(0)     # gas eth
+        self._t: List[float] = []  # signing times in minutes
     def rc(self):
         self.c += 1
     def rs(self):
@@ -45,93 +43,138 @@ class SafeSignerStats:
         self.g += from_wei(w, "ether")
     def at(self, c: MayaDT, s: MayaDT):
         self._t.append((s - c).seconds / 60)
-    def st(self) -> SummaryStats:
+    def stats(self) -> SummaryStats:
         return SummaryStats(self._t)
 
 class SafeStatsTransactionServiceApi(TransactionServiceApi):
     TX_LIMIT = 100
     def get_all_transactions(self, sa: str) -> List[Dict[str, Any]]:
-        b = f"/api/v1/safes/{sa}/multisig-transactions?limit={self.TX_LIMIT}"
-        n = None
-        t: List[Dict[str, Any]] = []
+        base = f"/api/v1/safes/{sa}/multisig-transactions?limit={self.TX_LIMIT}"
+        nonce = None
+        out: List[Dict[str, Any]] = []
         while True:
-            u = b + (f"&nonce__lt={n}" if n is not None else "")
-            r = self._get_request(u)
+            url = base + (f"&nonce__lt={nonce}" if nonce is not None else "")
+            r = self._get_request(url)
             if not r.ok:
                 raise RuntimeError(r.text)
-            p = r.json().get("results", [])
-            t.extend(p)
-            if len(p) == self.TX_LIMIT:
-                n = min(p, key=lambda x: x["nonce"])["nonce"]
+            page = r.json().get("results", [])
+            out.extend(page)
+            if len(page) == self.TX_LIMIT:
+                nonce = min(page, key=lambda x: x["nonce"])["nonce"]
             else:
-                return t
+                return out
 
 def print_safe_stats(sa: str, ep: str, fb: int = 0) -> None:
     ec = EthereumClient(ep)
-    s = Safe(address=sa, ethereum_client=ec)
-    i = s.retrieve_all_info()
-    l = "=" * 55
-    print(l)
-    print(f"Gnosis Safe: {i.address}")
-    print(l)
+    safe = Safe(address=sa, ethereum_client=ec)
+    info = safe.retrieve_all_info()
+
+    bar = "=" * 55
+    print(bar)
+    print(f"Gnosis Safe: {info.address}")
+    print(bar)
     if fb:
         print(f"\n*NOTE*: Only transactions from block {fb}\n")
+
+    # ---- Overview ----
     print("\n** OVERVIEW **\n")
-    print(f"Contract Version .............. {i.version}")
-    print(f"Threshold ..................... {i.threshold}")
-    print(f"Signers ....................... {len(i.owners)}")
-    for o in i.owners:
+    print(f"Contract Version .............. {info.version}")
+    print(f"Threshold ..................... {info.threshold}")
+    print(f"Signers ....................... {len(info.owners)}")
+    for o in info.owners:
         print(f"\t{o}")
+
+    # ---- Fetch transactions ----
+    api = SafeStatsTransactionServiceApi.from_ethereum_client(ec)
+    all_txs = api.get_all_transactions(sa)
+    executed = [t for t in all_txs if t["isExecuted"] and t["isSuccessful"] and t["blockNumber"] >= fb]
+
     print("\n** TRANSACTION INFO **\n")
-    sv = SafeStatsTransactionServiceApi.from_ethereum_client(ec)
-    at = sv.get_all_transactions(sa)
-    ex = [x for x in at if x["isExecuted"] and x["isSuccessful"] and x["blockNumber"] >= fb]
-    print(f"Num Executed Txs ............. {len(ex)}")
-    sd: Dict[str, SafeSignerStats] = {}
-    ee = 0
-    et: List[float] = []
-    for tx in ex:
+    print(f"Num Executed Txs ............. {len(executed)}")
+
+    # data holders
+    signer_stats: Dict[str, SafeSignerStats] = {}
+    executor_gas: Dict[str, Decimal] = {}
+    executor_count: Dict[str, int] = {}
+    non_owner_exec = 0
+    exec_times: List[float] = []
+    raw_exec_rows: List[str] = []
+
+    for tx in executed:
         cd = MayaDT.from_iso8601(tx["submissionDate"])
         ed = MayaDT.from_iso8601(tx["executionDate"])
-        et.append((ed - cd).seconds / 60)
-        exr = tx["executor"]
-        if exr not in i.owners:
-            ee += 1
-        else:
-            sd.setdefault(exr, SafeSignerStats(exr)).re()
-            sd[exr].ag(int(tx["fee"]))
-        for idx, c in enumerate(tx["confirmations"]):
-            ow = c["owner"]
-            st = sd.setdefault(ow, SafeSignerStats(ow))
+        exec_times.append((ed - cd).seconds / 60)
+
+        fee_wei = int(tx["fee"])
+        executor = tx["executor"]
+        eth_spent = from_wei(fee_wei, "ether")
+        executor_gas[executor] = executor_gas.get(executor, Decimal(0)) + eth_spent
+        executor_count[executor] = executor_count.get(executor, 0) + 1
+
+        # merge executor into signer stats (owner or not)
+        if executor not in signer_stats:
+            signer_stats[executor] = SafeSignerStats(executor)
+        signer_stats[executor].re()
+        signer_stats[executor].ag(fee_wei)
+
+        if executor not in info.owners:
+            non_owner_exec += 1
+
+        # confirmations → signings & creations
+        for idx, conf in enumerate(tx["confirmations"]):
+            owner = conf["owner"]
+            st = signer_stats.setdefault(owner, SafeSignerStats(owner))
             st.rs()
             if idx == 0:
                 st.rc()
             else:
-                st.at(cd, MayaDT.from_iso8601(c["submissionDate"]))
-    print(f"Non-Signer Executions ........ {ee}")
-    es = SummaryStats(et)
+                st.at(cd, MayaDT.from_iso8601(conf["submissionDate"]))
+
+        # raw row
+        raw_exec_rows.append(f"{tx['safeTxHash']},{tx['blockNumber']},{executor},{eth_spent:.4f}")
+
+    print(f"Non-Signer Executions ........ {non_owner_exec}")
+
+    # print executor gas table
+    print("Executor Gas Spent (ETH):")
+    for addr, gas in sorted(executor_gas.items(), key=lambda x: (-x[1], x[0])):
+        role = "owner" if addr in info.owners else "non-owner"
+        print(f"  {addr} ({role}) .... {gas:.4f}")
+
+    # overall timing stats
+    stats = SummaryStats(exec_times)
     print("Overall Tx Execution Statistics")
-    print(f"\tMin Time to Execution ........ {es.min:.0f} mins.")
-    print(f"\tMax Time to Execution ........ {es.max:.0f} mins.")
-    print(f"\tMean Time to Execution ....... {es.mean:.0f} mins.")
-    print(f"\tMedian Time to Execution ..... {es.median:.0f} mins.")
-    print(f"\tStdev Time to Execution ...... {es.stdev:.0f} mins.")
-    print("\n** SIGNER INFO **\n")
-    for a, st in sd.items():
-        print(f"\tSigner: {a}")
-        print(f"\t\tNum Txs Created ............ {st.c} ({st.c / len(ex):.1%})")
-        print(f"\t\tNum Txs Signed ............. {st.s} ({st.s / len(ex):.1%})")
-        print(f"\t\tNum Txs Executed ........... {st.e} ({st.e / len(ex):.1%})")
-        print(f"\t\tGas Spent .................. {st.g:.2f} ETH\n")
+    print(f"\tMin Time to Execution ........ {stats.min:.0f} mins.")
+    print(f"\tMax Time to Execution ........ {stats.max:.0f} mins.")
+    print(f"\tMean Time to Execution ....... {stats.mean:.0f} mins.")
+    print(f"\tMedian Time to Execution ..... {stats.median:.0f} mins.")
+    print(f"\tStdev Time to Execution ...... {stats.stdev:.0f} mins.")
+
+    # ---- Signer (and executor) section ----
+    print("\n** SIGNER & EXECUTOR INFO **\n")
+    for addr, st in sorted(signer_stats.items(), key=lambda x: (-x[1].g, x[0])):
+        role = "owner" if addr in info.owners else "relayer"
+        print(f"\tAddress ({role}): {addr}")
+        print(f"\t\tNum Txs Created ............ {st.c} ({st.c/len(executed):.1%})")
+        print(f"\t\tNum Txs Signed ............. {st.s} ({st.s/len(executed):.1%})")
+        print(f"\t\tNum Txs Executed ........... {st.e} ({st.e/len(executed):.1%})")
+        print(f"\t\tGas Spent .................. {st.g:.4f} ETH\n")
+
+    # ---- raw csv dump ----
+    print("** RAW EXECUTED TXS (csv) **")
+    print("txHash,blockNumber,executor,gasSpentEth")
+    for line in raw_exec_rows:
+        print(line)
+
 
 def main() -> None:
     if len(sys.argv) not in {3, 4}:
         print("Usage:\n  python safe_stats_compat.py <safe_address> <eth_endpoint> [from_block]")
         sys.exit(1)
     sa = sys.argv[1]
-    ep = sys.argv[2]
+    endpoint = sys.argv[2]
     fb = int(sys.argv[3]) if len(sys.argv) == 4 else 0
-    print_safe_stats(sa, ep, fb)
+    print_safe_stats(sa, endpoint, fb)
 
 if __name__ == "__main__":
     main()

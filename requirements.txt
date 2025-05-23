@@ -1,3 +1,4 @@
 safe-eth-py>=7.3.0        # modern Safe SDK (replaces gnosis-py)
 eth-utils>=5.0            # pulled in by safe-eth-py but pinned here explicitly
 maya>=0.6                 # datetime helper used in the script
+tabulate>=0.9
