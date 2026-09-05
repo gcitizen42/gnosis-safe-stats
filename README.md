@@ -1,52 +1,54 @@
-# 🛡 gnosis-safe-stats – quick analytics & history dump tools
+# Gnosis Safe Stats
 
-> Minimal, one-file helpers to analyse any Gnosis Safe on Ethereum (or other
-> networks served by the Safe Transaction Service).
+Small Python helpers for analyzing Gnosis Safe multisig activity through the Safe Transaction Service, with optional RPC enrichment for gas data.
 
-## TL;DR
+## Tools
+
+| File | Purpose | Output |
+| --- | --- | --- |
+| `safe_stats_compat.py` | Prints signer, executor, gas, and timing statistics for a Safe. | Console report |
+| `safe_history_rawdata.py` | Exports multisig transaction history, with optional on-chain gas enrichment. | CSV |
+
+## Requirements
+
+- Python 3.10+
+- A Safe address
+- Optional HTTP RPC URL if using `--fetch-chain`
+
+## Setup
 
 ```bash
-# 1⃣️  statistics for signers, executors & gas
-python safe_stats_compat.py  \
-       YOUR_SAFE \
-       https://eth-mainnet.g.alchemy.com/v2/YOUR_ALCHEMY_KEY \
-       13912542
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -r requirements.txt
+```
 
-# 2⃣️  full transaction history (CSV)
-python safe_tx_history.py    \
-       YOUR_SAFE \
-       https://eth-mainnet.g.alchemy.com/v2/YOUR_ALCHEMY_KEY \
-       --from-block 14483033            \
-       --fetch-chain                   \   # (optional) pull gasUsed from RPC
-       --outfile YOURSAFENAME-history.csv
-Scripts
-file	purpose	output
-safe_stats_compat.py	quick signer-rotation report.
-Shows time-to-execution stats, gas paid by each executor (owner & “old signer” alike), full signer table.	human-readable console report
-safe_tx_history.py	dump every multisig-transaction (raw + decoded summary) to CSV. Optional RPC enrich adds gasPrice / gasUsed.	CSV (one row per safeTx)
+## Usage
 
-safe_stats_compat.py — flags
-arg	meaning
-SAFE_ADDR	Safe address (any checksum / lower case)
-RPC_URL	HTTP RPC (Alchemy / Infura / …)
-FROM_BLOCK	first block to include (speeds the query)
+Signer/executor summary:
 
-safe_tx_history.py — flags
-flag	default	note
-SAFE_ADDR	–	required
-RPC_URL	–	set to any string when not using --fetch-chain
---from-block N	0	skip older txs
---fetch-chain	off	hit RPC to add gas_price_gwei / gas_used / fee_eth / input_data
---outfile FILE	safe-<addr>-tx.csv	where to write
+```bash
+python3 safe_stats_compat.py \
+  YOUR_SAFE_ADDRESS \
+  https://eth-mainnet.example/YOUR_RPC_KEY \
+  13912542
+```
 
-Decoding note – safe_tx_history.py does not attempt full ABI decoding;
-it prints the 4-byte selector (func abcd1234…) and payload length.
-Load the CSV in a spreadsheet and filter by selector to spot patterns.
+CSV history export:
 
-Development
+```bash
+python3 safe_history_rawdata.py \
+  YOUR_SAFE_ADDRESS \
+  https://eth-mainnet.example/YOUR_RPC_KEY \
+  --from-block 14483033 \
+  --fetch-chain \
+  --outfile safe-history.csv
+```
 
-'bash
-python -m venv venv
-source venv/bin/activate
+If you do not need RPC enrichment, pass any placeholder string for `RPC_URL` and omit `--fetch-chain`.
 
-pip install -r requirements.txt
+## Notes
+
+- Keep RPC keys in local environment files or your shell, not in committed files.
+- Generated CSVs, local env files, and backup outputs are ignored by git.
+- `safe_history_rawdata.py` reports the decoded method name when the Safe Transaction Service provides decoded data; it does not perform full ABI decoding itself.
