@@ -1,5 +1,7 @@
 # Gnosis Safe Stats
 
+> Consolidation note: this utility has been copied into [gcitizen42/defi-ai-ops](https://github.com/gcitizen42/defi-ai-ops) under `references/gnosis-safe-stats/` so the profile can center on a single project hub.
+
 Small Python helpers for analyzing Gnosis Safe multisig activity through the Safe Transaction Service, with optional RPC enrichment for gas data.
 
 ## Tools
